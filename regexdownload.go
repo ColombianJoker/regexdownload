@@ -3,10 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/ini.v1"
 )
@@ -50,16 +51,12 @@ func findConfigurationFile() (string, error) {
 	return "", nil // Not found
 }
 
-// processArguments loads the config file and processes each command-line argument.
-func processArguments(configFile string, args []string) {
+// processArguments loads the config file and processes each command-line URL argument.
+func processArguments(configFile string, args []string, verbose bool) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Error: No arguments provided to process.")
+		fmt.Fprintln(os.Stderr, "Error: No URL arguments provided to process.")
 		return
 	}
-
-	// Compile the regular expression to match 'ARGUMENT.domain'
-	// It ensures the domain part does not contain dots.
-	re := regexp.MustCompile(`^([^.]+)\.[^.]+$`)
 
 	// Load the INI file
 	cfg, err := ini.Load(configFile)
@@ -68,16 +65,28 @@ func processArguments(configFile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Process each argument
+	// Process each argument as a URL
 	for _, arg := range args {
-		matches := re.FindStringSubmatch(arg)
-		if matches == nil || len(matches) < 2 {
-			fmt.Fprintf(os.Stderr, "Error: Argument '%s' does not match the required 'ARGUMENT.domain' format.\n", arg)
+		parsedURL, err := url.Parse(arg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: Could not parse argument '%s' as a URL: %v\n", arg, err)
 			continue
 		}
 
-		sectionName := matches[1] // The first capture group is our section name
-		fmt.Printf("Processing section '%s' from argument '%s'...\n", sectionName, arg)
+		hostname := parsedURL.Hostname()
+		if hostname == "" {
+			fmt.Fprintf(os.Stderr, "Error: Could not extract hostname from URL '%s'.\n", arg)
+			continue
+		}
+
+		parts := strings.Split(hostname, ".")
+		if len(parts) < 2 {
+			fmt.Fprintf(os.Stderr, "Error: Hostname '%s' from URL '%s' is not a valid domain.\n", hostname, arg)
+			continue
+		}
+
+		sectionName := parts[len(parts)-2]
+		fmt.Printf("Processing section '%s' from URL '%s'...\n", sectionName, arg)
 
 		section, err := cfg.GetSection(sectionName)
 		if err != nil {
@@ -85,11 +94,30 @@ func processArguments(configFile string, args []string) {
 			continue
 		}
 
-		// Print all key-value pairs in the section
+		// --- New Prefix Logic ---
+		var prefixValue string
+		if section.HasKey("prefix") {
+			// Use the prefix from the config file
+			prefixValue = section.Key("prefix").String()
+		} else {
+			// Generate a prefix using section name and timestamp
+			timestamp := time.Now().Unix()
+			prefixValue = fmt.Sprintf("%s-%d", sectionName, timestamp)
+		}
+
+		if verbose {
+			fmt.Printf("  Prefix: %s\n", prefixValue)
+		}
+		// --- End of New Logic ---
+
+		// Print all key-value pairs in the section, skipping the special 'prefix' key
 		for _, key := range section.Keys() {
+			if key.Name() == "prefix" {
+				continue // Don't treat the prefix as a regular expression
+			}
 			fmt.Printf("%s = %s\n", key.Name(), key.String())
 		}
-		fmt.Println("---") // Separator for clarity
+		fmt.Println("---")
 	}
 }
 
@@ -114,7 +142,7 @@ func main() {
 		fmt.Printf("Using configuration file: %s\n", configFile)
 	}
 
-	// Get the non-flag arguments from the command line
 	args := flag.Args()
-	processArguments(configFile, args)
+	// Pass the verbose flag to the processing function
+	processArguments(configFile, args, *verbose)
 }
