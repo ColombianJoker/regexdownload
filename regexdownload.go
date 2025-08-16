@@ -270,7 +270,9 @@ func main() {
 	totalDownloads := 0
 
 	for _, res := range processed {
-		fmt.Printf("--- Queuing downloads for %s ---\n", res.URL)
+		if *verbose {
+			fmt.Printf("--- Queuing downloads for %s ---\n", res.URL)
+		}
 		if res.Err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing this URL: %v\n", res.Err)
 			continue
