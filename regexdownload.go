@@ -106,7 +106,7 @@ func processArguments(configFile string, args []string, verbose bool) {
 		}
 
 		if verbose {
-			fmt.Printf("  Prefix: %s\n", prefixValue)
+			fmt.Printf("Prefix: %s\n", prefixValue)
 		}
 		// --- End of New Logic ---
 
