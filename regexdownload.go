@@ -37,7 +37,7 @@ type DownloadResult struct {
 // cleanPrefix sanitizes a string for use in a filename.
 func cleanPrefix(s string) string {
 	cleaned := html.UnescapeString(s)
-	slashReplacer := strings.NewReplacer("/", "", "\\", "")
+	slashReplacer := strings.NewReplacer("/", "", "\\", "", "|", "")
 	cleaned = slashReplacer.Replace(cleaned)
 	reWhitespace := regexp.MustCompile("[ \t\u00A0]+")
 	cleaned = reWhitespace.ReplaceAllString(cleaned, " ")
@@ -262,7 +262,9 @@ func main() {
 	}
 
 	// --- STAGE 2: Download all found files concurrently ---
-	fmt.Println("\n--- Starting Download Phase ---")
+	if *verbose {
+		fmt.Println("\n--- Starting Download Phase ---")
+	}
 	downloadResults := make(chan DownloadResult)
 	var downloadWg sync.WaitGroup
 	totalDownloads := 0
@@ -311,5 +313,7 @@ func main() {
 			}
 		}
 	}
-	fmt.Println("--- Download Phase Complete ---")
+	if *verbose {
+		fmt.Println("--- Download Phase Complete ---")
+	}
 }
