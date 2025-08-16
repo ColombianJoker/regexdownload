@@ -239,9 +239,11 @@ func downloadURL(url, filepath string, wg *sync.WaitGroup, results chan<- Downlo
 
 // main function remains the same.
 func main() {
-	keepTemporary := flag.Bool("keep-temporary", false, "Keep temporary downloaded files for debugging")
 	verbose := flag.Bool("v", false, "Enable verbose output")
 	flag.BoolVar(verbose, "verbose", false, "Enable verbose output")
+	keepTemporary := flag.Bool("k", false, "Keep temporary downloaded files for debugging")
+	flag.BoolVar(keepTemporary, "keep", false, "Keep temporary downloaded files for debugging")
+	flag.BoolVar(keepTemporary, "keep-temporary", false, "Keep temporary downloaded files for debugging")
 	flag.Parse()
 
 	configFile, err := findConfigurationFile()
