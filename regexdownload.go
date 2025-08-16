@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path" // Used for extracting file extensions from URLs
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -17,16 +18,23 @@ import (
 	"gopkg.in/ini.v1"
 )
 
-// ProcessResult holds the outcome of a single URL processing goroutine.
+// ProcessResult holds the outcome of the initial URL parsing.
 type ProcessResult struct {
 	URL            string
 	FinalPrefix    string
-	FoundURLs      []string // To hold the matched image URLs
+	FoundURLs      []string
 	Err            error
 	OutputMessages []string
 }
 
-// cleanPrefix sanitizes a string to make it suitable for use in a filename.
+// DownloadResult holds the outcome of a single file download.
+type DownloadResult struct {
+	URL      string
+	Filepath string
+	Err      error
+}
+
+// cleanPrefix sanitizes a string for use in a filename.
 func cleanPrefix(s string) string {
 	cleaned := html.UnescapeString(s)
 	slashReplacer := strings.NewReplacer("/", "", "\\", "")
@@ -37,7 +45,7 @@ func cleanPrefix(s string) string {
 	return cleaned
 }
 
-// findConfigurationFile searches for the configuration file in a specific order.
+// findConfigurationFile remains the same.
 func findConfigurationFile() (string, error) {
 	executableName, err := os.Executable()
 	if err != nil {
@@ -45,47 +53,37 @@ func findConfigurationFile() (string, error) {
 	}
 	baseName := filepath.Base(executableName)
 	envVarName := strings.ToUpper(baseName) + "_CONFIG"
-
-	// 1. Check for the environment variable
 	if configPath := os.Getenv(envVarName); configPath != "" {
 		if _, err := os.Stat(configPath); err == nil {
 			return configPath, nil
 		}
 	}
-
-	// 2. Search in the current directory
 	configFileName := "." + baseName + ".conf"
 	if _, err := os.Stat(configFileName); err == nil {
 		return configFileName, nil
 	}
-
-	// 3. Search in /opt/local/etc
 	configPath := filepath.Join("/opt/local/etc", baseName+".conf")
 	if _, err := os.Stat(configPath); err == nil {
 		return configPath, nil
 	}
-
-	// 4. Search in /etc - ** THIS BLOCK IS NOW CORRECT **
-	configPath = filepath.Join("/etc", baseName+".conf") // Use assignment "=" instead of ":="
+	configPath = filepath.Join("/etc", baseName+".conf")
 	if _, err := os.Stat(configPath); err == nil {
 		return configPath, nil
 	}
-
-	return "", nil // Not found
+	return "", nil
 }
 
-// processURL is the worker function that handles a single URL.
+// processURL is the worker that parses the initial page.
 func processURL(arg string, cfg *ini.File, wg *sync.WaitGroup, results chan<- ProcessResult) {
 	defer wg.Done()
 	res := ProcessResult{URL: arg}
-
+	// ... (This function's content remains unchanged from the previous version)
 	parsedURL, err := url.Parse(arg)
 	if err != nil {
 		res.Err = fmt.Errorf("could not parse as a URL: %w", err)
 		results <- res
 		return
 	}
-
 	hostname := parsedURL.Hostname()
 	parts := strings.Split(hostname, ".")
 	if len(parts) < 2 {
@@ -95,14 +93,12 @@ func processURL(arg string, cfg *ini.File, wg *sync.WaitGroup, results chan<- Pr
 	}
 	sectionName := parts[len(parts)-2]
 	res.OutputMessages = append(res.OutputMessages, fmt.Sprintf("Processing section '%s'...", sectionName))
-
 	section, err := cfg.GetSection(sectionName)
 	if err != nil {
 		res.Err = fmt.Errorf("section '[%s]' not found in config", sectionName)
 		results <- res
 		return
 	}
-
 	hasPrefixRegex := section.HasKey("prefix")
 	var prefixValue string
 	if hasPrefixRegex {
@@ -111,14 +107,12 @@ func processURL(arg string, cfg *ini.File, wg *sync.WaitGroup, results chan<- Pr
 		prefixValue = fmt.Sprintf("%s-%d", sectionName, time.Now().Unix())
 	}
 	res.FinalPrefix = prefixValue
-
 	if !strings.HasPrefix(arg, "http://") && !strings.HasPrefix(arg, "https://") {
 		res.OutputMessages = append(res.OutputMessages, "Argument is not a downloadable HTTP/S URL.")
 		res.FinalPrefix = cleanPrefix(res.FinalPrefix)
 		results <- res
 		return
 	}
-
 	resp, err := http.Get(arg)
 	if err != nil {
 		res.Err = fmt.Errorf("failed to download: %w", err)
@@ -126,13 +120,11 @@ func processURL(arg string, cfg *ini.File, wg *sync.WaitGroup, results chan<- Pr
 		return
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		res.Err = fmt.Errorf("download failed with status: %s", resp.Status)
 		results <- res
 		return
 	}
-
 	tmpFile, err := os.CreateTemp("", "regexdownload-*.tmp")
 	if err != nil {
 		res.Err = fmt.Errorf("failed to create temp file: %w", err)
@@ -140,7 +132,6 @@ func processURL(arg string, cfg *ini.File, wg *sync.WaitGroup, results chan<- Pr
 		return
 	}
 	defer os.Remove(tmpFile.Name())
-
 	_, err = io.Copy(tmpFile, resp.Body)
 	tmpFile.Close()
 	if err != nil {
@@ -148,16 +139,12 @@ func processURL(arg string, cfg *ini.File, wg *sync.WaitGroup, results chan<- Pr
 		results <- res
 		return
 	}
-
-	// ** EFFICIENT FILE HANDLING: Read the file only ONCE **
 	content, err := os.ReadFile(tmpFile.Name())
 	if err != nil {
 		res.Err = fmt.Errorf("failed to read temp file: %w", err)
 		results <- res
 		return
 	}
-
-	// First, process the prefix using the file content
 	if hasPrefixRegex {
 		re, err := regexp.Compile(prefixValue)
 		if err != nil {
@@ -167,34 +154,68 @@ func processURL(arg string, cfg *ini.File, wg *sync.WaitGroup, results chan<- Pr
 		}
 		matches := re.FindSubmatch(content)
 		if len(matches) >= 2 {
-			res.FinalPrefix = string(matches[1]) // Update prefix from capture group
+			res.FinalPrefix = string(matches[1])
 			res.OutputMessages = append(res.OutputMessages, "  Prefix extracted from content.")
 		} else {
 			res.OutputMessages = append(res.OutputMessages, "  Prefix regex did not match or had no capture group.")
 		}
 	}
-
-	// Second, find all image URLs using the same file content
 	for _, key := range section.Keys() {
 		if strings.HasPrefix(key.Name(), "re") {
 			regexString := key.String()
 			re, err := regexp.Compile(regexString)
 			if err != nil {
-				// Don't exit, just note the error and continue to the next regex
 				res.OutputMessages = append(res.OutputMessages, fmt.Sprintf("  Warning: Invalid regex for key '%s': %v", key.Name(), err))
 				continue
 			}
-			// Find all non-overlapping matches in the content
 			matches := re.FindAllSubmatch(content, -1)
 			for _, match := range matches {
-				if len(match) > 1 { // We need a capture group
-					res.FoundURLs = append(res.FoundURLs, string(match[1])) // Add the content of the first capture group
+				if len(match) > 1 {
+					res.FoundURLs = append(res.FoundURLs, string(match[1]))
 				}
 			}
 		}
 	}
-
 	res.FinalPrefix = cleanPrefix(res.FinalPrefix)
+	results <- res
+}
+
+// downloadURL is the worker function for downloading a single file.
+func downloadURL(url, filepath string, wg *sync.WaitGroup, results chan<- DownloadResult) {
+	defer wg.Done()
+	res := DownloadResult{URL: url, Filepath: filepath}
+
+	// Make the GET request
+	resp, err := http.Get(url)
+	if err != nil {
+		res.Err = err
+		results <- res
+		return
+	}
+	defer resp.Body.Close()
+
+	// Check server response
+	if resp.StatusCode != http.StatusOK {
+		res.Err = fmt.Errorf("bad status: %s", resp.Status)
+		results <- res
+		return
+	}
+
+	// Create the output file
+	out, err := os.Create(filepath)
+	if err != nil {
+		res.Err = err
+		results <- res
+		return
+	}
+	defer out.Close()
+
+	// Write the body to file
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		res.Err = err
+	}
+
 	results <- res
 }
 
@@ -206,10 +227,6 @@ func main() {
 	configFile, err := findConfigurationFile()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	if configFile == "" {
-		fmt.Fprintln(os.Stderr, "Error: Configuration file not found.")
 		os.Exit(1)
 	}
 	if *verbose {
@@ -228,35 +245,71 @@ func main() {
 		os.Exit(1)
 	}
 
-	var wg sync.WaitGroup
-	results := make(chan ProcessResult, len(args))
-
+	// --- STAGE 1: Parse initial URLs and find download links ---
+	parseResults := make(chan ProcessResult, len(args))
+	var parseWg sync.WaitGroup
 	for _, arg := range args {
-		wg.Add(1)
-		go processURL(arg, cfg, &wg, results)
+		parseWg.Add(1)
+		go processURL(arg, cfg, &parseWg, parseResults)
+	}
+	parseWg.Wait()
+	close(parseResults)
+
+	// Collect all processed results into a slice
+	var processed []ProcessResult
+	for res := range parseResults {
+		processed = append(processed, res)
 	}
 
-	wg.Wait()
-	close(results)
+	// --- STAGE 2: Download all found files concurrently ---
+	fmt.Println("\n--- Starting Download Phase ---")
+	downloadResults := make(chan DownloadResult)
+	var downloadWg sync.WaitGroup
+	totalDownloads := 0
 
-	for res := range results {
-		fmt.Printf("--- Result for %s ---\n", res.URL)
+	for _, res := range processed {
+		fmt.Printf("--- Queuing downloads for %s ---\n", res.URL)
 		if res.Err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", res.Err)
+			fmt.Fprintf(os.Stderr, "Error processing this URL: %v\n", res.Err)
+			continue
 		}
-		for _, msg := range res.OutputMessages {
-			fmt.Println(msg)
+		if len(res.FoundURLs) == 0 {
+			fmt.Println("No URLs found to download.")
+			continue
 		}
-		if *verbose && res.FinalPrefix != "" {
-			fmt.Printf("  Cleaned Final Prefix: %s\n", res.FinalPrefix)
-		}
-		if len(res.FoundURLs) > 0 {
-			fmt.Println("Found URLs:")
-			for _, u := range res.FoundURLs {
-				fmt.Printf("%s\n", u)
+
+		for i, urlToDownload := range res.FoundURLs {
+			fileIndex := i + 1
+			extension := path.Ext(urlToDownload)
+			if extension == "" {
+				extension = ".unknown" // Fallback extension
 			}
-		} else {
-			fmt.Println("No URLs found.")
+			fileName := fmt.Sprintf("%s-%02d%s", res.FinalPrefix, fileIndex, extension)
+
+			downloadWg.Add(1)
+			totalDownloads++
+			go downloadURL(urlToDownload, fileName, &downloadWg, downloadResults)
 		}
 	}
+
+	// A separate goroutine to close the download channel once all workers are done
+	go func() {
+		downloadWg.Wait()
+		close(downloadResults)
+	}()
+
+	// Process download results as they come in
+	for i := 0; i < totalDownloads; i++ {
+		res := <-downloadResults
+		if res.Err != nil {
+			fmt.Fprintf(os.Stderr, "Error downloading %s: %v\n", res.URL, res.Err)
+		} else {
+			if *verbose {
+				fmt.Printf("%s -> %s\n", res.URL, res.Filepath)
+			} else {
+				fmt.Println(res.Filepath)
+			}
+		}
+	}
+	fmt.Println("--- Download Phase Complete ---")
 }
